@@ -56,17 +56,18 @@ To only load specific variables, supply a list of variable names as strings to t
 # (1) import
 from h5coro import h5coro, s3driver
 
-# (2) create
-h5obj = h5coro.H5Coro(f'{my_bucket}/{path_to_hdf5_file}', s3driver.S3Driver)
+# (2) create -- use as a context manager so the cache and S3 connection
+#     are released deterministically when the block exits
+with h5coro.H5Coro(f'{my_bucket}/{path_to_hdf5_file}', s3driver.S3Driver) as h5obj:
 
-# (3) read
-datasets = [{'dataset': '/path/to/dataset1', 'hyperslice': []},
-            {'dataset': '/path/to/dataset2', 'hyperslice': [324, 374]}]
-promise = h5obj.readDatasets(datasets=datasets, block=True)
+    # (3) read
+    datasets = [{'dataset': '/path/to/dataset1', 'hyperslice': []},
+                {'dataset': '/path/to/dataset2', 'hyperslice': [324, 374]}]
+    promise = h5obj.readDatasets(datasets=datasets, block=True)
 
-# (4) display
-for variable in promise:
-    print(f'{variable}: {promise[variable]}')
+    # (4) display
+    for variable in promise:
+        print(f'{variable}: {promise[variable]}')
 ```
 
 #### (1) Importing h5coro
@@ -87,6 +88,11 @@ If the `block` parameter is set to True, then the code will wait for all of the 
 
 #### (4) Display the Datasets
 The h5coro promise is a dictionary of `numpy` arrays containing the values of the variables read, along with some additional logic that provides the ability to block while waiting for the data to be populated.
+
+#### (5) Releasing Resources
+**h5coro** caches the file it reads in fixed-size blocks (4 MB by default, see `cacheLineSize`). To release those cached blocks and the underlying S3 connection, either use the reader as a context manager (`with h5coro.H5Coro(...) as h5obj:`, shown above) or call `h5obj.close()` explicitly. This matters most when reading **many** files in a loop (e.g. one reader per granule): without an explicit `close()`/context manager the cache is only freed when the object is garbage-collected, so peak memory tracks the slowest-collected reader rather than a single granule.
+
+One subtlety to be aware of: the arrays returned in a promise are **zero-copy** — for a dataset that lands within a single cache block, the returned `numpy` array is a view into that 4 MB block, so retaining the array keeps the whole block alive even after `close()`. If you need to keep a small slice of a large read around after closing the reader, copy it first (e.g. `numpy.array(promise[var])`, or any operation that materializes a new array such as boolean-mask indexing). For metadata-heavy navigation over many small files, a smaller `cacheLineSize` reduces the per-block footprint.
 
 ## Licensing
 

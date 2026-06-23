@@ -43,13 +43,19 @@ def datasetThread(resourceObject, dataset, hyperslice, *, earlyExit, metaOnly, e
         log.warn(f'H5Coro encountered error reading {dataset}: {e}')
         return H5Dataset(resourceObject, dataset, hyperslice, makeNull=True, earlyExit=earlyExit, metaOnly=metaOnly, enableAttributes=enableAttributes)
 
-def resultThread(promise, futures):
-    for future in as_completed(futures):
-        h5dataset = future.result()
-        promise.conditions[h5dataset.dataset].acquire()
-        promise.datasets[h5dataset.dataset] = h5dataset
-        promise.conditions[h5dataset.dataset].notify()
-        promise.conditions[h5dataset.dataset].release()
+def resultThread(promise, futures, executor=None):
+    try:
+        for future in as_completed(futures):
+            h5dataset = future.result()
+            promise.conditions[h5dataset.dataset].acquire()
+            promise.datasets[h5dataset.dataset] = h5dataset
+            promise.conditions[h5dataset.dataset].notify()
+            promise.conditions[h5dataset.dataset].release()
+    finally:
+        # Release the worker threads once all datasets are populated; otherwise the
+        # executor (and the resourceObject its closures capture) leaks on every read.
+        if executor is not None:
+            executor.shutdown(wait=False)
 
 def massagePath(path):
     if len(path) > 0 and path[0] == '/':
@@ -79,11 +85,12 @@ class H5Promise:
         executor = ThreadPoolExecutor(max_workers=len(datasetTable))
         futures = [executor.submit(datasetThread, resourceObject, dataset["dataset"], dataset["hyperslice"], earlyExit=earlyExit, metaOnly=metaOnly, enableAttributes=enableAttributes) for dataset in datasetTable.values()]
 
-        # wait for datasets to be populated OR populate datasets in the background
+        # wait for datasets to be populated OR populate datasets in the background;
+        # resultThread shuts the executor down once every future has completed.
         if block:
-            resultThread(self, futures)
+            resultThread(self, futures, executor)
         else:
-            Thread(target=resultThread, args=(self,futures), daemon=True).start()
+            Thread(target=resultThread, args=(self, futures, executor), daemon=True).start()
 
     #######################
     # waitOnResult

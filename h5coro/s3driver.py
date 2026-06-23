@@ -119,12 +119,14 @@ class S3Driver:
                 Range=f"bytes={offset}-{offset + size - 1}"
             )
             return response["Body"].read()
-        except self.client.exceptions.NoSuchKey:
+        except self.client.exceptions.NoSuchKey as e:
+            # Returning None here silently corrupts the read (callers wrap the
+            # result in memoryview()); surface the failure instead.
             logger.error(f"S3 key {self.key} does not exist in bucket {self.bucket_name}")
-            return None
+            raise FatalError(f"S3 key {self.key} does not exist in bucket {self.bucket_name}") from e
         except Exception as e:
             logger.error(f"Error reading {self.key} from {self.bucket_name}: {e}")
-            return None
+            raise
 
     #######################
     # Copy Constructor
