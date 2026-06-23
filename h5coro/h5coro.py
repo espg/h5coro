@@ -132,8 +132,10 @@ class H5Coro:
         self.baseAddress = 0
         self.rootAddress = H5Dataset.readSuperblock(self)
 
-        # Register automatic cleanup when the object is deleted
-        weakref.finalize(self, self._cleanup, self.driver, self.cache, self.cache_locks, log)
+        # Register automatic cleanup when the object is garbage-collected. _cleanup
+        # is a staticmethod so the finalizer holds no reference to self -- a bound
+        # method would pin the instance and the finalizer would never fire (zagg#66).
+        self._finalizer = weakref.finalize(self, self._cleanup, self.driver, self.cache, self.cache_locks, log, self.verbose)
 
         # Limit for concurrent processes in multi-process mode
         if self.multiProcess:
@@ -221,19 +223,23 @@ class H5Coro:
         links, attributes, _ = self.inspectPath(path, w_attr)
         # inspect each link to get metadata, attributes, group info, etc
         if len(links) > 0:
-            executor = ThreadPoolExecutor(max_workers=(len(links) + len(attributes)))
-            futures = [executor.submit(inspectThread, self, f'{path}/{link}', w_attr) for link in links]
-            for future in as_completed(futures):
-                name, metadata, attrs = future.result() # overwrites attribute set
-                element = isolateElement(name, path)
-                if metadata == None: # group
-                    groups[element] = {}
-                    for attr in attrs:
-                        groups[element][attr] = attrs[attr]
-                elif metadata.type != None: # variable
-                    variables[element] = {'__metadata__': metadata}
-                    for attr in attrs:
-                        variables[element][attr] = attrs[attr]
+            # Use the executor as a context manager so it is shut down when the
+            # method returns; otherwise its worker threads (whose inspectThread
+            # closures capture self) outlive the call and pin the H5Coro object,
+            # defeating weakref.finalize-based cleanup (zagg#66).
+            with ThreadPoolExecutor(max_workers=(len(links) + len(attributes))) as executor:
+                futures = [executor.submit(inspectThread, self, f'{path}/{link}', w_attr) for link in links]
+                for future in as_completed(futures):
+                    name, metadata, attrs = future.result() # overwrites attribute set
+                    element = isolateElement(name, path)
+                    if metadata == None: # group
+                        groups[element] = {}
+                        for attr in attrs:
+                            groups[element][attr] = attrs[attr]
+                    elif metadata.type != None: # variable
+                        variables[element] = {'__metadata__': metadata}
+                        for attr in attrs:
+                            variables[element][attr] = attrs[attr]
 
         # return results
         return variables, attributes, groups
@@ -294,14 +300,20 @@ class H5Coro:
     #######################
     # _cleanup
     #######################
-    def _cleanup(self, driver, cache, cache_locks, log):
-        """Function to clean up resources when the object is deleted."""
+    @staticmethod
+    def _cleanup(driver, cache, cache_locks, log, verbose=False):
+        """Release resources held by an H5Coro instance.
+
+        Implemented as a staticmethod (no self) so it can be registered with
+        weakref.finalize without keeping the instance alive; a bound method would
+        pin self and the finalizer would never run on its own (zagg#66).
+        """
         try:
             if driver and hasattr(driver, 'close'):
                 driver.close()
             cache.clear()
             cache_locks.clear()
-            if self.verbose:
+            if verbose:
                 log.info("H5Coro resources cleaned up.")
         except Exception as e:
             log.error(f"Error while cleaning up resources: {e}")
@@ -310,5 +322,18 @@ class H5Coro:
     # close
     #######################
     def close(self):
-        self._cleanup(self.driver, self.cache, self.cache_locks, log)
+        """Release cache lines, locks, and the driver. Idempotent: calling close()
+        runs _cleanup at most once (subsequent calls and GC-time finalization are
+        no-ops), so it is safe to call explicitly and via the context manager."""
+        self._finalizer()
+
+    #######################
+    # context manager
+    #######################
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
 
