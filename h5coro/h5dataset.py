@@ -790,11 +790,16 @@ class H5Dataset:
 
         # check version
         # (compound messages are written as versions 1, 2 or 3 and array
-        #  messages as 2 or 3; every other class is only ever version 1)
+        #  messages as 2 or 3; HDF5 upgrades variable length and enumerated
+        #  messages to the version of the compound or array containing them,
+        #  so as members those can be 1, 2 or 3; every other class, and any
+        #  top-level non-compound message, is only accepted as version 1)
         if meta.type == H5Metadata.COMPOUND_TYPE:
             supported_versions = (1, 2, 3)
         elif meta.type == H5Metadata.ARRAY_TYPE and member:
             supported_versions = (2, 3)
+        elif meta.type in (H5Metadata.VARIABLE_LENGTH_TYPE, H5Metadata.ENUMERATED_TYPE) and member:
+            supported_versions = (1, 2, 3)
         else:
             supported_versions = (1,)
         if self.resourceObject.errorChecking and version not in supported_versions:
@@ -954,7 +959,7 @@ class H5Dataset:
             vlen_type_size = meta.typeSize
 
             # recursively call datatype message
-            self.datatypeMsgHandler(0, obj_hdr_flags, dlvl, meta)
+            self.datatypeMsgHandler(0, obj_hdr_flags, dlvl, meta, member=member)
 
             # restore metadata
             meta.typeSize = vlen_type_size
