@@ -154,7 +154,7 @@ class H5Metadata:
         itemsize of the enclosing struct is always correct.  The result is
         computed once (after the datatype message has been parsed) and cached.
         """
-        if self._numpyDtype == None:
+        if self._numpyDtype is None:
             self._numpyDtype = self._buildNumpyDtype()
         return self._numpyDtype
 

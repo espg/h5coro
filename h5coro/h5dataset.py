@@ -772,6 +772,10 @@ class H5Dataset:
         if meta == None:
             meta = self.meta
 
+        # clear any cached numpy dtype so a re-parse of this metadata object
+        # (e.g. earlyExit=False on a cached metadataTable entry) cannot keep it
+        meta._numpyDtype    = None
+
         starting_position   = self.pos
         version_class       = self.readField(4)
         meta.typeSize       = self.readField(4)
