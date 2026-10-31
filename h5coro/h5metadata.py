@@ -160,12 +160,16 @@ class H5Metadata:
 
     def _buildNumpyDtype(self):
         if self.type == self.COMPOUND_TYPE:
-            return numpy.dtype({
-                'names':    [name for name, _, _ in self.members],
-                'formats':  [member.numpyDtype for _, _, member in self.members],
-                'offsets':  [offset for _, offset, _ in self.members],
-                'itemsize': self.typeSize
-            })
+            try:
+                return numpy.dtype({
+                    'names':    [name for name, _, _ in self.members],
+                    'formats':  [member.numpyDtype for _, _, member in self.members],
+                    'offsets':  [offset for _, offset, _ in self.members],
+                    'itemsize': self.typeSize
+                })
+            except (ValueError, TypeError) as e:
+                log.warning(f'compound datatype of size {self.typeSize} has members that do not fit a numpy dtype ({e}): treating as opaque')
+                return numpy.dtype(f'V{self.typeSize}')
         elif self.type == self.FIXED_POINT_TYPE or self.type == self.FLOATING_POINT_TYPE:
             try:
                 dtype = numpy.dtype(self.TO_NUMPY_TYPE[self.type][self.signedval][self.typeSize])
