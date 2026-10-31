@@ -979,6 +979,51 @@ class H5Dataset:
             meta.baseType = H5Metadata()
             self.datatypeMsgHandler(0, obj_hdr_flags, dlvl, meta.baseType, member=True)
 
+        # Bit Field (only parsed as a compound member; at the top level it
+        # still falls through to the default branch below)
+        elif meta.type == H5Metadata.BIT_FIELD_TYPE and member:
+            meta.byteOrder = databits & 0x1
+            bit_offset      = self.readField(2)
+            bit_precision   = self.readField(2)
+            if self.resourceObject.verbose:
+                log.info(f'Byte Order:           {meta.byteOrder}')
+                log.info(f'Bit Offset:           {bit_offset}')
+                log.info(f'Bit Precision:        {bit_precision}')
+
+        # Time (only parsed as a compound member)
+        elif meta.type == H5Metadata.TIME_TYPE and member:
+            meta.byteOrder = databits & 0x1
+            bit_precision   = self.readField(2)
+            if self.resourceObject.verbose:
+                log.info(f'Bit Precision:        {bit_precision}')
+
+        # Opaque (only parsed as a compound member)
+        elif meta.type == H5Metadata.OPAQUE_TYPE and member:
+            # the ASCII tag is stored in (databits & 0xFF) bytes, a multiple of
+            # 8; it is only null terminated when shorter than that length
+            tag_size = databits & 0xFF
+            tag = bytes(self.readArray(tag_size)).split(b'\0', 1)[0]
+            if self.resourceObject.verbose:
+                log.info(f'Opaque Tag:           {tag.decode("utf-8", "replace")}')
+
+        # Enumerated (only parsed as a compound member)
+        elif meta.type == H5Metadata.ENUMERATED_TYPE and member:
+            num_values = databits & 0xFFFF
+
+            # base datatype message
+            meta.baseType = H5Metadata()
+            self.datatypeMsgHandler(0, obj_hdr_flags, dlvl, meta.baseType, member=True)
+
+            # names: null terminated, padded to a multiple of 8 bytes in
+            # versions 1 and 2, unpadded in version 3
+            names = [self.readCString(padded=(version < 3)) for _ in range(num_values)]
+
+            # values: one base datatype element per name
+            self.pos += num_values * meta.baseType.typeSize
+
+            if self.resourceObject.verbose:
+                log.info(f'Enumeration Names:    {names}')
+
         # String
         elif meta.type == H5Metadata.STRING_TYPE:
             padding = databits & 0x0F
