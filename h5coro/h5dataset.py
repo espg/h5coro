@@ -893,7 +893,11 @@ class H5Dataset:
                     member_meta = array_meta
 
                 if self.resourceObject.verbose:
-                    log.info(f'Member {m}:             {member_name} @{member_offset} ({member_meta})')
+                    # (fields are logged directly: H5Metadata.__repr__ raises
+                    #  KeyError for sizes outside its lookup table)
+                    log.info(f'Member {m}:             {member_name} @{member_offset} '
+                             f'(type={member_meta.type} size={member_meta.typeSize} '
+                             f'byteOrder={member_meta.byteOrder} dims={member_meta.arrayDims})')
 
                 meta.members.append((member_name, member_offset, member_meta))
         # Reference
