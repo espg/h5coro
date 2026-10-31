@@ -350,6 +350,27 @@ class H5Dataset:
         return raw
 
     #######################
+    # readCString
+    #
+    #   Reads a null terminated string at the current position; when padded
+    #   is True the string is stored in a multiple of 8 bytes (the position
+    #   is advanced past the padding), otherwise just past the terminator.
+    #######################
+    def readCString(self, padded):
+        BLOCK_SIZE = 8
+        raw = bytearray()
+        while True:
+            block = bytes(self.readArray(BLOCK_SIZE))
+            terminator = block.find(b'\0')
+            if terminator < 0:
+                raw.extend(block)
+                continue
+            raw.extend(block[:terminator])
+            if not padded:
+                self.pos -= BLOCK_SIZE - (terminator + 1)
+            return raw.decode('utf-8')
+
+    #######################
     # readSuperblock
     #
     #   Note: this is NOT a class method as it takes a 'resourceObject'
@@ -744,7 +765,10 @@ class H5Dataset:
     #######################
     # datatypeMsgHandler
     #######################
-    def datatypeMsgHandler(self, msg_size, obj_hdr_flags, dlvl, meta=None):
+    def datatypeMsgHandler(self, msg_size, obj_hdr_flags, dlvl, meta=None, member=False):
+        # member is True when recursing into a compound datatype's member; the
+        # array (class 10) branch is only taken in that context so that the
+        # behaviour for top-level array datasets is unchanged
         if meta == None:
             meta = self.meta
 
@@ -765,13 +789,22 @@ class H5Dataset:
             log.info(f'Signed:               {meta.signedval}')
 
         # check version
-        if self.resourceObject.errorChecking and version != 1:
+        # (compound messages are written as versions 1, 2 or 3 and array
+        #  messages as 2 or 3; every other class is only ever version 1)
+        if meta.type == H5Metadata.COMPOUND_TYPE:
+            supported_versions = (1, 2, 3)
+        elif meta.type == H5Metadata.ARRAY_TYPE and member:
+            supported_versions = (2, 3)
+        else:
+            supported_versions = (1,)
+        if self.resourceObject.errorChecking and version not in supported_versions:
             raise FatalError(f'unsupported datatype version {version}')
 
         # Fixed Point
         if meta.type == H5Metadata.FIXED_POINT_TYPE:
+            meta.byteOrder = databits & 0x1
             if self.resourceObject.verbose:
-                byte_order      = databits & 0x1
+                byte_order      = meta.byteOrder
                 pad_type        = (databits & 0x06) >> 1
                 bit_offset      = self.readField(2)
                 bit_precision   = self.readField(2)
@@ -784,8 +817,9 @@ class H5Dataset:
         # Floating Point
         elif meta.type == H5Metadata.FLOATING_POINT_TYPE:
             meta.signedval = True
+            meta.byteOrder = ((databits & 0x40) >> 5) | (databits & 0x1)
             if self.resourceObject.verbose:
-                byte_order      = ((databits & 0x40) >> 5) | (databits & 0x1)
+                byte_order      = meta.byteOrder
                 pad_type        = (databits & 0x0E) >> 1
                 mant_norm       = (databits & 0x30) >> 4
                 sign_loc        = (databits & 0xFF00) >> 8
@@ -809,11 +843,65 @@ class H5Dataset:
                 log.info(f'Exponent Bias:        {exp_bias}')
             else:
                 self.pos += 12
-        # Reference
+        # Compound
         elif meta.type == H5Metadata.COMPOUND_TYPE:
             meta.signedval = True
-            log.warning(f'Compound datatype is not currently supported: unable to fully inspect {self.dataset}')
-            self.pos = starting_position + msg_size
+            num_members = databits & 0xFFFF
+            meta.members = []
+
+            # width of the member offset field (version 3 only): the minimum
+            # number of bytes needed to hold the size of the compound datatype
+            if meta.typeSize < 0x100:
+                offset_size = 1
+            elif meta.typeSize < 0x10000:
+                offset_size = 2
+            elif meta.typeSize < 0x100000000:
+                offset_size = 4
+            else:
+                offset_size = 8
+
+            if self.resourceObject.verbose:
+                log.info(f'Number of Members:    {num_members}')
+
+            for m in range(num_members):
+                # member name: null terminated, padded to a multiple of 8 bytes
+                # in versions 1 and 2, unpadded in version 3
+                member_name = self.readCString(padded=(version < 3))
+
+                # member offset (and version 1 array-like dimensions)
+                member_dims = []
+                if version == 1:
+                    member_offset = self.readField(4)
+                    member_ndims = self.readField(1)
+                    self.pos += 3                       # reserved
+                    self.pos += 4                       # dimension permutation (unused)
+                    self.pos += 4                       # reserved
+                    dims = [self.readField(4) for _ in range(4)]
+                    member_dims = dims[:member_ndims]
+                elif version == 2:
+                    member_offset = self.readField(4)
+                else:
+                    member_offset = self.readField(offset_size)
+
+                # recursively read the member's datatype message
+                member_meta = H5Metadata()
+                self.datatypeMsgHandler(0, obj_hdr_flags, dlvl, member_meta, member=True)
+
+                # a version 1 member with dimensions is an array of the member datatype
+                if len(member_dims) > 0:
+                    array_meta = H5Metadata()
+                    array_meta.type = H5Metadata.ARRAY_TYPE
+                    array_meta.arrayDims = member_dims
+                    array_meta.baseType = member_meta
+                    array_meta.typeSize = member_meta.typeSize
+                    for dim in member_dims:
+                        array_meta.typeSize *= dim
+                    member_meta = array_meta
+
+                if self.resourceObject.verbose:
+                    log.info(f'Member {m}:             {member_name} @{member_offset} ({member_meta})')
+
+                meta.members.append((member_name, member_offset, member_meta))
         # Reference
         elif meta.type == H5Metadata.REFERENCE_TYPE:
             meta.signedval = True
@@ -880,6 +968,22 @@ class H5Dataset:
                 meta.signedval = True # ASCII
             elif charset == 1:
                 meta.signedval = False # UTF-8
+
+        # Array (only reached as a compound member, see supported_versions above)
+        elif meta.type == H5Metadata.ARRAY_TYPE and member:
+            array_ndims = self.readField(1)
+            if version == 2:
+                self.pos += 3                           # reserved
+            meta.arrayDims = [self.readField(4) for _ in range(array_ndims)]
+            if version == 2:
+                self.pos += 4 * array_ndims             # permutation indices (unused)
+
+            if self.resourceObject.verbose:
+                log.info(f'Array Dimensions:     {meta.arrayDims}')
+
+            # recursively read the base datatype message
+            meta.baseType = H5Metadata()
+            self.datatypeMsgHandler(0, obj_hdr_flags, dlvl, meta.baseType, member=True)
 
         # String
         elif meta.type == H5Metadata.STRING_TYPE:

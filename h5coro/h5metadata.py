@@ -103,6 +103,10 @@ class H5Metadata:
         self.chunkDimensions    = []
         self.elementSize        = 0
         self.isattribute        = False
+        self.byteOrder          = 0     # 0: little endian, 1: big endian (fixed/floating point only)
+        self.members            = []    # compound: list of (name, offset, H5Metadata) in file order
+        self.arrayDims          = []    # array: dimension sizes of the array datatype
+        self.baseType           = None  # array: H5Metadata of the element datatype
         self.filter             = {
             self.DEFLATE_FILTER:        False,
             self.SHUFFLE_FILTER:        False,
