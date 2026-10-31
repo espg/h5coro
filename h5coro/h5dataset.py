@@ -850,15 +850,9 @@ class H5Dataset:
             meta.members = []
 
             # width of the member offset field (version 3 only): the minimum
-            # number of bytes needed to hold the size of the compound datatype
-            if meta.typeSize < 0x100:
-                offset_size = 1
-            elif meta.typeSize < 0x10000:
-                offset_size = 2
-            elif meta.typeSize < 0x100000000:
-                offset_size = 4
-            else:
-                offset_size = 8
+            # number of bytes needed to hold the size of the compound datatype,
+            # any width from 1 to 8 bytes (HDF5's H5VM_limit_enc_size rule)
+            offset_size = (max(meta.typeSize, 1).bit_length() - 1) // 8 + 1
 
             if self.resourceObject.verbose:
                 log.info(f'Number of Members:    {num_members}')
@@ -881,7 +875,7 @@ class H5Dataset:
                 elif version == 2:
                     member_offset = self.readField(4)
                 else:
-                    member_offset = self.readField(offset_size)
+                    member_offset = int.from_bytes(bytes(self.readArray(offset_size)), 'little')
 
                 # recursively read the member's datatype message
                 member_meta = H5Metadata()
