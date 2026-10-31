@@ -190,6 +190,8 @@ class H5Metadata:
     #######################
     def memberDtypes(self):
         """Ordered {member name: numpy dtype} for a compound type ({} otherwise)."""
+        if self.type != self.COMPOUND_TYPE:
+            return {}
         return {name: member.numpyDtype for name, _, member in self.members}
 
     #######################
