@@ -185,18 +185,20 @@ def test_compound_attribute_v1(tmp_path):
         obj.close()
 
 
-def test_wide_struct_v3_offset_width(tmp_path):
-    # a struct larger than 65535 bytes exercises the 3-byte member offset width
-    # that HDF5 writes in version 3 compound messages
-    dtype = np.dtype({'names': ['head', 'tail'], 'formats': ['<i4', '<f8'], 'offsets': [0, 69000], 'itemsize': 70000})
+@pytest.mark.parametrize('itemsize', [255, 256, 65535, 65536, 70000])
+def test_wide_struct_v3_offset_width(tmp_path, itemsize):
+    # version 3 compound messages store member offsets in the fewest bytes that
+    # can hold the struct size: sizes on both sides of each width boundary cover
+    # the 1-, 2- and 3-byte widths
+    dtype = np.dtype({'names': ['head', 'tail'], 'formats': ['<i4', '<f8'], 'offsets': [0, itemsize - 8], 'itemsize': itemsize})
     path = tmp_path / 'wide.h5'
     with h5py.File(path, 'w', libver=('v108', 'v108')) as f:
         f.create_dataset('wide', (2,), dtype=dtype)
     obj = h5coro.H5Coro(str(path), filedriver.FileDriver, errorChecking=True)
     try:
         _, _, meta = obj.inspectPath('wide', w_attr=False)
-        assert meta.typeSize == 70000
-        assert [(m[0], m[1]) for m in meta.members] == [('head', 0), ('tail', 69000)]
+        assert meta.typeSize == itemsize
+        assert [(m[0], m[1]) for m in meta.members] == [('head', 0), ('tail', itemsize - 8)]
         assert meta.numpyDtype == dtype
     finally:
         obj.close()
