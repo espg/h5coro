@@ -170,10 +170,15 @@ class H5Coro:
                 dataset = massagePath(dataset)
                 dataset_table[dataset] = {"dataset": dataset, "hyperslice": []}
             else:
-                dataset["dataset"] = massagePath(dataset["dataset"])
-                if "hyperslice" not in dataset:
-                    dataset["hyperslice"] = []
-                dataset_table[dataset["dataset"]] = dataset
+                # build a fresh entry so the caller's dict (and its hyperslice
+                # list, which H5Dataset fills in place) is never modified
+                path = massagePath(dataset["dataset"])
+                hyperslice = dataset.get("hyperslice")
+                if hyperslice is None:
+                    hyperslice = []
+                elif isinstance(hyperslice, (list, tuple)):
+                    hyperslice = [list(r) if isinstance(r, (list, tuple)) else r for r in hyperslice]
+                dataset_table[path] = {"dataset": path, "hyperslice": hyperslice, "fields": dataset.get("fields")}
 
         # validate field selections up front so that a bad request raises in the
         # caller (reads that fail inside the promise are logged and return None)
