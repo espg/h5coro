@@ -122,6 +122,10 @@ def test_shuffle_word_wider_than_8_bytes(h5obj, layout_file):
     with h5py.File(layout_file, 'r') as f:
         expected = f['shuffled_s16'][:]
     values = h5obj.readDatasets(['shuffled_s16'], block=True)['shuffled_s16']
-    # fixed strings are still decoded by the existing string path (first null
-    # terminated value of the buffer); the point here is that the read succeeds
-    assert values == expected[0].decode('ascii')
+    # arrays of fixed strings are still rendered by the existing string path (a
+    # repr of the raw buffer); the point here is that the read succeeds and the
+    # bytes were un-shuffled, so every row appears intact and in order
+    assert values is not None
+    positions = [values.find(row.decode('ascii')) for row in expected]
+    assert all(p >= 0 for p in positions)
+    assert positions == sorted(positions)
