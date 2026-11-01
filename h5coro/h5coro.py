@@ -32,7 +32,7 @@ import sys
 import threading
 import weakref
 
-from h5coro.h5dataset import H5Dataset, FatalError
+from h5coro.h5dataset import H5Dataset, FatalError, normalizeFields
 from h5coro.h5promise import H5Promise, massagePath
 from h5coro.h5metadata import H5Metadata
 from h5coro.logger import log
@@ -184,7 +184,7 @@ class H5Coro:
         # caller (reads that fail inside the promise are logged and return None)
         for dataset in dataset_table.values():
             if dataset.get("fields") is not None:
-                self.validateFields(dataset["dataset"], dataset["fields"], earlyExit=earlyExit, enableAttributes=enableAttributes)
+                dataset["fields"] = self.validateFields(dataset["dataset"], dataset["fields"], earlyExit=earlyExit, enableAttributes=enableAttributes)
 
         # return promise
         return H5Promise(self, dataset_table, block, earlyExit=earlyExit, metaOnly=metaOnly, enableAttributes=enableAttributes)
@@ -193,10 +193,7 @@ class H5Coro:
     # validateFields
     #######################
     def validateFields(self, dataset, fields, *, earlyExit, enableAttributes):
-        if type(fields) == str:
-            fields = [fields]
-        if len(fields) == 0:
-            raise FatalError(f'empty field selection for {dataset}')
+        fields = normalizeFields(dataset, fields)
         H5Dataset(self, dataset, earlyExit=earlyExit, metaOnly=True, enableAttributes=enableAttributes)
         meta = self.metadataTable.get(dataset)
         if meta == None or meta.type != H5Metadata.COMPOUND_TYPE:
@@ -205,6 +202,7 @@ class H5Coro:
         unknown = [field for field in fields if field not in available]
         if len(unknown) > 0:
             raise FatalError(f'unknown field(s) {unknown} in {dataset}; available fields: {available}')
+        return fields
 
     #######################
     # readPath

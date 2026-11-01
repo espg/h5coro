@@ -67,6 +67,21 @@ class FatalError(RuntimeError):
 # LOCAL FUNCTIONS
 ###############################################################################
 
+def normalizeFields(dataset, fields):
+    # a single name becomes a one-name list; anything else must be a non-empty
+    # list/tuple of distinct str (raises FatalError otherwise)
+    if type(fields) == str:
+        fields = [fields]
+    if not isinstance(fields, (list, tuple)) or not all(type(field) == str for field in fields):
+        raise FatalError(f'fields for {dataset} must be a str or a list of str, got {fields!r}')
+    fields = list(fields)
+    if len(fields) == 0:
+        raise FatalError(f'empty field selection for {dataset}')
+    duplicates = sorted({field for field in fields if fields.count(field) > 1})
+    if len(duplicates) > 0:
+        raise FatalError(f'duplicate field(s) {duplicates} in selection for {dataset}: {fields}')
+    return fields
+
 def BTreeReader(dataset, buffer, level):
     """Function executed in a forked process to read BTree."""
     driver = None
@@ -348,8 +363,7 @@ class H5Dataset:
     #   structured array holding just those members (in the order given).
     #######################
     def selectFields(self, values, fields):
-        if type(fields) == str:
-            fields = [fields]
+        fields = normalizeFields(self.dataset, fields)
         if self.meta.type != H5Metadata.COMPOUND_TYPE:
             raise FatalError(f'fields {list(fields)} requested on {self.dataset}, which is not a compound dataset')
         available = [name for name, _, _ in self.meta.members]
