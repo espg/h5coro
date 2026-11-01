@@ -32,7 +32,7 @@ import sys
 import threading
 import weakref
 
-from h5coro.h5dataset import H5Dataset
+from h5coro.h5dataset import H5Dataset, FatalError, normalizeFields
 from h5coro.h5promise import H5Promise, massagePath
 from h5coro.h5metadata import H5Metadata
 from h5coro.logger import log
@@ -152,6 +152,16 @@ class H5Coro:
     # readDatasets
     #######################
     def readDatasets(self, datasets, block=True, earlyExit=EARLY_EXIT_DEFAULT, metaOnly=META_ONLY_DEFAULT, enableAttributes=ENABLE_ATTRIBUTES_DEFAULT):
+        """
+        Read datasets; each entry is a path or a request dict:
+            {"dataset": path, "hyperslice": [[start, end], ...], "fields": [name, ...], "squeeze_fields": True}
+        Only "dataset" is required; the caller's dict is not modified.
+        "fields" applies to compound datasets only and selects members after the
+        records are decoded: several names give a structured array restricted to
+        those members (in the order given). A single name (or a bare str) gives
+        that member's plain array when "squeeze_fields" is True (the default),
+        or a one-member structured array when it is False.
+        """
         # check if datasets supplied
         if len(datasets) <= 0:
             return
@@ -163,11 +173,50 @@ class H5Coro:
                 dataset = massagePath(dataset)
                 dataset_table[dataset] = {"dataset": dataset, "hyperslice": []}
             else:
-                dataset["dataset"] = massagePath(dataset["dataset"])
-                dataset_table[dataset["dataset"]] = dataset
+                # build a fresh entry so the caller's dict (and its hyperslice
+                # list, which H5Dataset fills in place) is never modified
+                path = massagePath(dataset["dataset"])
+                hyperslice = dataset.get("hyperslice")
+                if hyperslice is None:
+                    hyperslice = []
+                elif isinstance(hyperslice, (list, tuple)):
+                    hyperslice = [list(r) if isinstance(r, (list, tuple)) else r for r in hyperslice]
+                dataset_table[path] = {"dataset": path, "hyperslice": hyperslice, "fields": dataset.get("fields"), "squeeze_fields": dataset.get("squeeze_fields", True)}
+
+        # validate field selections up front so that a bad request raises in the
+        # caller (reads that fail inside the promise are logged and return None)
+        # (the metadata-only reads use earlyExit=True: only the datatype is
+        # needed, and the promise's workers then hit the metadata cache)
+        selections = [dataset for dataset in dataset_table.values() if dataset.get("fields") is not None]
+        for dataset in selections:
+            dataset["fields"] = normalizeFields(dataset["dataset"], dataset["fields"])
+        if len(selections) == 1:
+            H5Dataset(self, selections[0]["dataset"], earlyExit=True, metaOnly=True, enableAttributes=enableAttributes)
+        elif len(selections) > 1:
+            with ThreadPoolExecutor(max_workers=len(selections)) as executor:
+                futures = [executor.submit(H5Dataset, self, dataset["dataset"], earlyExit=True, metaOnly=True, enableAttributes=enableAttributes) for dataset in selections]
+                for future in futures:
+                    future.result()
+        for dataset in selections:
+            self.validateFields(dataset["dataset"], dataset["fields"])
 
         # return promise
         return H5Promise(self, dataset_table, block, earlyExit=earlyExit, metaOnly=metaOnly, enableAttributes=enableAttributes)
+
+    #######################
+    # validateFields
+    #######################
+    def validateFields(self, dataset, fields):
+        # expects normalised fields and the dataset's metadata already read
+        meta = self.metadataTable.get(dataset)
+        if meta == None or meta.typeSize == 0:
+            raise FatalError(f'dataset {dataset} not found; cannot select fields {fields}')
+        if meta.type != H5Metadata.COMPOUND_TYPE:
+            raise FatalError(f'fields {list(fields)} requested on {dataset}, which is not a compound dataset')
+        available = [name for name, _, _ in meta.members]
+        unknown = [field for field in fields if field not in available]
+        if len(unknown) > 0:
+            raise FatalError(f'unknown field(s) {unknown} in {dataset}; available fields: {available}')
 
     #######################
     # readPath
