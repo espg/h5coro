@@ -342,7 +342,9 @@ class H5Dataset:
         # populate data
         if self.meta.type == H5Metadata.FIXED_POINT_TYPE or self.meta.type == H5Metadata.FLOATING_POINT_TYPE:
             elements = int(buffer_size / self.meta.typeSize)
-            datatype = H5Metadata.TO_NUMPY_TYPE[self.meta.type][self.meta.signedval][self.meta.typeSize]
+            datatype = numpy.dtype(H5Metadata.TO_NUMPY_TYPE[self.meta.type][self.meta.signedval][self.meta.typeSize])
+            if self.meta.byteOrder == 1:
+                datatype = datatype.newbyteorder('>') # big endian data is left as stored, numpy swaps on access
             self.values = numpy.frombuffer(buffer, dtype=datatype, count=elements)
             if self.meta.ndims > 1:
                 self.values = self.values.reshape(self.shape)

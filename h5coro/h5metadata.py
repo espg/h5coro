@@ -201,9 +201,12 @@ class H5Metadata:
         """Convert H5Metadata type to a NumPy-compatible dtype."""
         if self.type in [self.FIXED_POINT_TYPE, self.FLOATING_POINT_TYPE]:
             try:
-                return numpy.dtype(self.TO_NUMPY_TYPE[self.type][self.signedval][self.typeSize])
+                dtype = numpy.dtype(self.TO_NUMPY_TYPE[self.type][self.signedval][self.typeSize])
             except KeyError:
                 return numpy.float32  # Default fallback for unknown floating-point types
+            if self.byteOrder == 1:
+                dtype = dtype.newbyteorder('>')
+            return dtype
 
         elif self.type in [self.STRING_TYPE, self.VL_STRING_TYPE]:
             return numpy.dtype("U")  # Use NumPy's Unicode string type
