@@ -317,7 +317,7 @@ class TestCompoundDecode:
             assert name in message
 
     def test_fields_on_non_compound_raises(self, h5obj):
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError, match='not a compound dataset'):
             h5obj.readDatasets([{'dataset': 'plain', 'fields': ['a']}], block=True)
 
     def test_fields_as_string(self, h5obj, compound_file):
