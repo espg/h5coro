@@ -85,15 +85,17 @@ class TestCompoundMetadata:
 
         with caplog.at_level(logging.WARNING):
             _, _, meta = h5obj.inspectPath(name)
+            dtype = meta.numpyDtype
+        # every member of these datasets is decodable, so nothing falls back to opaque
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
         assert meta.type == H5Metadata.COMPOUND_TYPE
         assert meta.typeSize == expected.itemsize
         assert tuple(meta.dimensions) == shape
         assert [m[0] for m in meta.members] == list(expected.names)
         assert [m[1] for m in meta.members] == [expected.fields[n][1] for n in expected.names]
-        assert meta.numpyDtype == expected
-        assert meta.numpyDtype.itemsize == expected.itemsize
-        assert 'not currently supported' not in caplog.text
+        assert dtype == expected
+        assert dtype.itemsize == expected.itemsize
 
     def test_member_byte_order(self, h5obj):
         _, _, meta = h5obj.inspectPath('flat', w_attr=False)
@@ -131,12 +133,13 @@ class TestCompoundMetadata:
             expected = f['enum_member'].dtype
         with caplog.at_level(logging.WARNING):
             _, _, meta = h5obj.inspectPath('enum_member', w_attr=False)
+            meta.numpyDtype
+        assert 'treating as opaque' in caplog.text
         # the enum member is not decodable, it must still have the right size
         assert meta.numpyDtype['k'] == np.dtype('V1')
         assert meta.numpyDtype['w'] == np.dtype('<u2')
         assert meta.numpyDtype.itemsize == expected.itemsize
         assert [meta.numpyDtype.fields[n][1] for n in expected.names] == [expected.fields[n][1] for n in expected.names]
-        assert 'treating as opaque' in caplog.text
 
     def test_member_dtypes_and_repr(self, h5obj):
         _, _, meta = h5obj.inspectPath('flat', w_attr=False)
@@ -147,12 +150,17 @@ class TestCompoundMetadata:
             assert f'"{name}"' in text
         assert 'unsupported' not in text
 
-    def test_list_reports_members(self, h5obj):
-        variables, _, _ = h5obj.list('/', w_attr=False)
-        meta = variables['flat']['__metadata__']
+    def test_list_reports_members(self, h5obj, caplog):
+        with caplog.at_level(logging.WARNING):
+            variables, _, _ = h5obj.list('/', w_attr=False)
+            meta = variables['flat']['__metadata__']
+            dtype = meta.numpyDtype
+        # list() no longer warns about compound datasets; numpyDtype is built
+        # lazily, so the enum_member opaque fallback is not triggered here either
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
         assert meta.type == H5Metadata.COMPOUND_TYPE
         assert [m[0] for m in meta.members] == list(FLAT_DTYPE.names)
-        assert meta.numpyDtype == FLAT_DTYPE
+        assert dtype == FLAT_DTYPE
         # non-compound datasets in the same file are reported as before
         plain = variables['plain']['__metadata__']
         assert plain.type == H5Metadata.FLOATING_POINT_TYPE
