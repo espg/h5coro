@@ -196,7 +196,9 @@ class H5Coro:
         fields = normalizeFields(dataset, fields)
         H5Dataset(self, dataset, earlyExit=earlyExit, metaOnly=True, enableAttributes=enableAttributes)
         meta = self.metadataTable.get(dataset)
-        if meta == None or meta.type != H5Metadata.COMPOUND_TYPE:
+        if meta == None or meta.typeSize == 0:
+            raise FatalError(f'dataset {dataset} not found; cannot select fields {fields}')
+        if meta.type != H5Metadata.COMPOUND_TYPE:
             raise FatalError(f'fields {list(fields)} requested on {dataset}, which is not a compound dataset')
         available = [name for name, _, _ in meta.members]
         unknown = [field for field in fields if field not in available]
