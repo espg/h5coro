@@ -252,7 +252,10 @@ class H5Dataset:
 
             # fill buffer with fill value (if provided and if enabled)
             if self.enableFill and self.meta.fillsize > 0:
-                fill_values = struct.pack('Q', self.meta.fillvalue)[:self.meta.fillsize]
+                if type(self.meta.fillvalue) == bytes:
+                    fill_values = self.meta.fillvalue
+                else:
+                    fill_values = struct.pack('Q', self.meta.fillvalue)[:self.meta.fillsize]
                 for i in range(0, buffer_size, self.meta.fillsize):
                     buffer[i:i+self.meta.fillsize] = fill_values
 
@@ -311,6 +314,14 @@ class H5Dataset:
             elements = int(buffer_size / self.meta.typeSize)
             datatype = H5Metadata.TO_NUMPY_TYPE[self.meta.type][self.meta.signedval][self.meta.typeSize]
             self.values = numpy.frombuffer(buffer, dtype=datatype, count=elements)
+            if self.meta.ndims > 1:
+                self.values = self.values.reshape(self.shape)
+        elif self.meta.type == H5Metadata.COMPOUND_TYPE:
+            # a compound dataset is a numpy structured array by construction: the
+            # structured dtype built from the datatype message maps straight onto
+            # the bytes of each record (hyperslices are rows of records)
+            elements = int(buffer_size / self.meta.typeSize)
+            self.values = numpy.frombuffer(buffer, dtype=self.meta.numpyDtype, count=elements)
             if self.meta.ndims > 1:
                 self.values = self.values.reshape(self.shape)
         elif self.meta.type == H5Metadata.STRING_TYPE or self.meta.type == H5Metadata.VL_STRING_TYPE:
@@ -1103,7 +1114,7 @@ class H5Dataset:
             if fill_value_defined:
                 self.meta.fillsize = self.readField(4)
                 if self.meta.fillsize > 0:
-                    self.meta.fillvalue = self.readField(self.meta.fillsize)
+                    self.meta.fillvalue = self.readFillValue(self.meta.fillsize)
         # version 3
         else:
             flags = self.readField(1)
@@ -1112,7 +1123,7 @@ class H5Dataset:
 
             if flags & FILL_VALUE_DEFINED:
                 self.meta.fillsize = self.readField(4)
-                self.meta.fillvalue = self.readField(self.meta.fillsize)
+                self.meta.fillvalue = self.readFillValue(self.meta.fillsize)
 
         # display
         if self.resourceObject.verbose:
@@ -1121,6 +1132,18 @@ class H5Dataset:
 
         # return bytes read
         return self.pos - starting_position
+
+    #######################
+    # readFillValue
+    #
+    #   Fill values of 1, 2, 4 or 8 bytes are read as integers (as before);
+    #   any other size (a compound's struct fill value, for example) is kept
+    #   as the raw bytes so that it can be copied into the data buffer.
+    #######################
+    def readFillValue(self, size):
+        if size in SIZE_2_FORMAT:
+            return self.readField(size)
+        return bytes(self.readArray(size))
 
     #######################
     # linkMsgHandler
