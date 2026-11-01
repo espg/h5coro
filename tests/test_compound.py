@@ -63,7 +63,7 @@ def compound_file(request, tmp_path_factory):
     with h5py.File(path, 'w', **LIBVERS[request.param]) as f:
         for name, (dtype, kwargs) in DATASETS.items():
             f.create_dataset(name, data=make_records(dtype, NUM_RECORDS), **kwargs)
-        f.create_dataset('grid', data=make_records(FLAT_DTYPE, 12).reshape(3, 4))
+        f.create_dataset('grid', data=make_records(FLAT_DTYPE, 12).reshape(3, 4), chunks=(2, 2))
         f.create_dataset('plain', data=np.arange(NUM_RECORDS, dtype='<f4'))
     return str(path)
 
@@ -210,3 +210,189 @@ def test_wide_struct_v3_offset_width(tmp_path, itemsize):
         assert meta.numpyDtype == dtype
     finally:
         obj.close()
+
+
+###############################################################################
+# decoding (issue #3)
+###############################################################################
+
+HYPERSLICE = [[7, 29]]
+CHUNKED = [n for n in DATASETS if n.endswith('_chunked')]
+
+
+class TestCompoundDecode:
+
+    @pytest.mark.parametrize('name', [n for n in DATASETS if n != 'enum_member'])
+    def test_full_read_matches_h5py(self, h5obj, compound_file, name):
+        with h5py.File(compound_file, 'r') as f:
+            expected = f[name][:]
+        values = h5obj.readDatasets([name], block=True)[name]
+        assert values.dtype == expected.dtype
+        np.testing.assert_array_equal(values, expected)
+
+    @pytest.mark.parametrize('name', CHUNKED)
+    def test_hyperslice_read_matches_h5py(self, h5obj, compound_file, name):
+        with h5py.File(compound_file, 'r') as f:
+            expected = f[name][HYPERSLICE[0][0]:HYPERSLICE[0][1]]
+        promise = h5obj.readDatasets([{'dataset': name, 'hyperslice': HYPERSLICE}], block=True)
+        np.testing.assert_array_equal(promise[name], expected)
+
+    @pytest.mark.xfail(strict=True, reason='hyperslices on contiguous layouts read from the dataset start for every datatype (pre-existing, not compound specific)')
+    def test_hyperslice_read_contiguous(self, h5obj, compound_file):
+        with h5py.File(compound_file, 'r') as f:
+            expected = f['flat'][HYPERSLICE[0][0]:HYPERSLICE[0][1]]
+        promise = h5obj.readDatasets([{'dataset': 'flat', 'hyperslice': HYPERSLICE}], block=True)
+        np.testing.assert_array_equal(promise['flat'], expected)
+
+    def test_two_dimensional_read(self, h5obj, compound_file):
+        with h5py.File(compound_file, 'r') as f:
+            expected = f['grid'][:]
+        values = h5obj.readDatasets(['grid'], block=True)['grid']
+        assert values.shape == (3, 4)
+        np.testing.assert_array_equal(values, expected)
+        sliced = h5obj.readDatasets([{'dataset': 'grid', 'hyperslice': [[1, 3], [0, 2]]}], block=True)['grid']
+        assert sliced.shape == (2, 2)
+        np.testing.assert_array_equal(sliced, expected[1:3, 0:2])
+
+    def test_big_endian_member_round_trip(self, h5obj, compound_file):
+        with h5py.File(compound_file, 'r') as f:
+            expected = f['flat']['c']
+        values = h5obj.readDatasets(['flat'], block=True)['flat']
+        assert values['c'].dtype == np.dtype('>f4')
+        np.testing.assert_array_equal(values['c'], expected)
+        np.testing.assert_array_equal(values['c'].astype('<f4'), expected.astype('<f4'))
+
+    def test_nested_and_array_members(self, h5obj, compound_file):
+        with h5py.File(compound_file, 'r') as f:
+            nested = f['nested'][:]
+            array = f['array_member'][:]
+        promise = h5obj.readDatasets(['nested', 'array_member'], block=True)
+        np.testing.assert_array_equal(promise['nested']['p']['b'], nested['p']['b'])
+        np.testing.assert_array_equal(promise['nested']['q'], nested['q'])
+        assert promise['array_member']['v'].shape == (NUM_RECORDS, 2)
+        np.testing.assert_array_equal(promise['array_member']['v'], array['v'])
+
+    def test_opaque_member_reads_raw_bytes(self, h5obj, compound_file):
+        with h5py.File(compound_file, 'r') as f:
+            expected = f['enum_member'][:]
+        values = h5obj.readDatasets(['enum_member'], block=True)['enum_member']
+        np.testing.assert_array_equal(values['w'], expected['w'])
+        assert values['k'].dtype == np.dtype('V1')
+        np.testing.assert_array_equal(values['k'].view('i1'), expected['k'])
+
+    def test_fields_selection(self, h5obj, compound_file):
+        with h5py.File(compound_file, 'r') as f:
+            expected = f['flat'][:]
+        promise = h5obj.readDatasets([
+            {'dataset': 'flat', 'fields': ['a', 'c']},
+        ], block=True)
+        values = promise['flat']
+        assert values.dtype.names == ('a', 'c')
+        np.testing.assert_array_equal(values['a'], expected['a'])
+        np.testing.assert_array_equal(values['c'], expected['c'])
+
+    def test_single_field_returns_plain_array(self, h5obj, compound_file):
+        with h5py.File(compound_file, 'r') as f:
+            expected = f['flat']['b']
+        promise = h5obj.readDatasets([{'dataset': 'flat_chunked', 'fields': ['b'], 'hyperslice': HYPERSLICE}], block=True)
+        values = promise['flat_chunked']
+        assert values.dtype == np.dtype('<f8')
+        assert values.dtype.names is None
+        np.testing.assert_array_equal(values, expected[HYPERSLICE[0][0]:HYPERSLICE[0][1]])
+
+    def test_nested_field_selection(self, h5obj, compound_file):
+        with h5py.File(compound_file, 'r') as f:
+            expected = f['nested'][:]
+        values = h5obj.readDatasets([{'dataset': 'nested', 'fields': ['p']}], block=True)['nested']
+        assert values.dtype == FLAT_DTYPE
+        np.testing.assert_array_equal(values['s'], expected['p']['s'])
+
+    def test_unknown_field_raises(self, h5obj):
+        with pytest.raises(RuntimeError) as excinfo:
+            h5obj.readDatasets([{'dataset': 'flat', 'fields': ['a', 'nope']}], block=True)
+        message = str(excinfo.value)
+        assert 'nope' in message
+        for name in FLAT_DTYPE.names:
+            assert name in message
+
+    def test_fields_on_non_compound_raises(self, h5obj):
+        with pytest.raises(RuntimeError):
+            h5obj.readDatasets([{'dataset': 'plain', 'fields': ['a']}], block=True)
+
+    def test_fields_as_string(self, h5obj, compound_file):
+        with h5py.File(compound_file, 'r') as f:
+            expected = f['flat']['a']
+        values = h5obj.readDatasets([{'dataset': 'flat', 'fields': 'a'}], block=True)['flat']
+        np.testing.assert_array_equal(values, expected)
+
+    def test_shuffled_wide_struct(self, h5obj, compound_file):
+        # the shuffle word size is the 24-byte struct, wider than any atomic type
+        with h5py.File(compound_file, 'r') as f:
+            assert f['flat_chunked'].shuffle and f['flat_chunked'].compression == 'gzip'
+            expected = f['flat_chunked'][:]
+        np.testing.assert_array_equal(h5obj.readDatasets(['flat_chunked'], block=True)['flat_chunked'], expected)
+
+
+def test_struct_fill_value(tmp_path):
+    # an explicit struct fill value is longer than 8 bytes; it must neither stop
+    # the object header parse nor corrupt the records that were written
+    dtype = np.dtype([('a', '<i4'), ('b', '<f8')])
+    fill = np.array((7, 1.5), dtype=dtype)
+    path = tmp_path / 'fill.h5'
+    with h5py.File(path, 'w') as f:
+        ds = f.create_dataset('fv', (6,), dtype=dtype, fillvalue=fill, chunks=(2,))
+        ds[:3] = make_records(dtype, 3)
+    with h5py.File(path, 'r') as f:
+        expected = f['fv'][:]
+    obj = h5coro.H5Coro(str(path), filedriver.FileDriver, errorChecking=True)
+    try:
+        values = obj.readDatasets(['fv'], block=True)['fv']
+        np.testing.assert_array_equal(values, expected)
+    finally:
+        obj.close()
+
+
+class TestFieldSelectionOptions:
+
+    def test_squeeze_fields_false_keeps_structure(self, h5obj, compound_file):
+        with h5py.File(compound_file, 'r') as f:
+            expected = f['flat']['b']
+        values = h5obj.readDatasets([{'dataset': 'flat', 'fields': ['b'], 'squeeze_fields': False}], block=True)['flat']
+        assert values.dtype.names == ('b',)
+        np.testing.assert_array_equal(values['b'], expected)
+
+    def test_multi_field_selection_is_a_view(self, h5obj):
+        # numpy multi-field indexing keeps the record size and offsets (a view);
+        # pin that so a future change to a packed copy is deliberate
+        values = h5obj.readDatasets([{'dataset': 'flat', 'fields': ['a', 'c']}], block=True)['flat']
+        assert values.dtype.itemsize == FLAT_DTYPE.itemsize
+        assert values.dtype.fields['c'][1] == FLAT_DTYPE.fields['c'][1]
+
+    @pytest.mark.parametrize('fields', [['a', 'a'], [], 5, ['a', 3]])
+    def test_malformed_fields_raise(self, h5obj, fields):
+        with pytest.raises(RuntimeError):
+            h5obj.readDatasets([{'dataset': 'flat', 'fields': fields}], block=True)
+
+    def test_missing_dataset_with_fields_raises(self, h5obj):
+        with pytest.raises(RuntimeError) as excinfo:
+            h5obj.readDatasets([{'dataset': 'does_not_exist', 'fields': ['a']}], block=True)
+        assert 'not found' in str(excinfo.value)
+
+    def test_request_dict_is_not_modified(self, h5obj):
+        request = {'dataset': 'flat_chunked', 'hyperslice': [[1, 4]], 'fields': ['a']}
+        snapshot = {'dataset': 'flat_chunked', 'hyperslice': [[1, 4]], 'fields': ['a']}
+        h5obj.readDatasets([request], block=True)
+        assert request == snapshot
+
+    def test_several_field_requests(self, h5obj, compound_file):
+        with h5py.File(compound_file, 'r') as f:
+            flat = f['flat'][:]
+            nested = f['nested'][:]
+        promise = h5obj.readDatasets([
+            {'dataset': 'flat', 'fields': ['s']},
+            {'dataset': 'nested', 'fields': ['q']},
+            'array_member',
+        ], block=True)
+        np.testing.assert_array_equal(promise['flat'], flat['s'])
+        np.testing.assert_array_equal(promise['nested'], nested['q'])
+        assert promise['array_member'].dtype == ARRAY_DTYPE
