@@ -129,9 +129,10 @@ class H5Dataset:
     #######################
     # Constructor
     #######################
-    def __init__(self, resourceObject, dataset, hyperslice=None, makeNull=False, enableFill=True, *, earlyExit, metaOnly, enableAttributes):
+    def __init__(self, resourceObject, dataset, hyperslice=None, makeNull=False, enableFill=True, fields=None, *, earlyExit, metaOnly, enableAttributes):
         # initialize object
         self.resourceObject         = resourceObject
+        self.fields                 = fields
         self.earlyExit              = earlyExit
         self.metaOnly               = metaOnly
         self.enableAttributes       = enableAttributes
@@ -334,6 +335,30 @@ class H5Dataset:
                 self.values = f'{buffer}'
         else:
             log.warning(f'{self.dataset} is an unsupported datatype {self.meta.type}: unable to populate values')
+
+        # select fields (compound datasets only)
+        if self.fields is not None:
+            self.values = self.selectFields(self.values, self.fields)
+
+    #######################
+    # selectFields
+    #
+    #   Restricts a decoded compound array to the requested member names:
+    #   one name returns that member's plain array, several names return a
+    #   structured array holding just those members (in the order given).
+    #######################
+    def selectFields(self, values, fields):
+        if type(fields) == str:
+            fields = [fields]
+        if self.meta.type != H5Metadata.COMPOUND_TYPE:
+            raise FatalError(f'fields {list(fields)} requested on {self.dataset}, which is not a compound dataset')
+        available = [name for name, _, _ in self.meta.members]
+        unknown = [field for field in fields if field not in available]
+        if len(unknown) > 0:
+            raise FatalError(f'unknown field(s) {unknown} in {self.dataset}; available fields: {available}')
+        if len(fields) == 1:
+            return values[fields[0]]
+        return values[list(fields)]
 
     #######################
     # Destructor

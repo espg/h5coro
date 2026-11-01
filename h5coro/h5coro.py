@@ -32,7 +32,7 @@ import sys
 import threading
 import weakref
 
-from h5coro.h5dataset import H5Dataset
+from h5coro.h5dataset import H5Dataset, FatalError
 from h5coro.h5promise import H5Promise, massagePath
 from h5coro.h5metadata import H5Metadata
 from h5coro.logger import log
@@ -152,6 +152,13 @@ class H5Coro:
     # readDatasets
     #######################
     def readDatasets(self, datasets, block=True, earlyExit=EARLY_EXIT_DEFAULT, metaOnly=META_ONLY_DEFAULT, enableAttributes=ENABLE_ATTRIBUTES_DEFAULT):
+        """
+        Read datasets; each entry is a path or a request dict:
+            {"dataset": path, "hyperslice": [[start, end], ...], "fields": [name, ...]}
+        "fields" applies to compound datasets only and selects members after the
+        records are decoded: several names give a structured array restricted to
+        those members, a single name gives that member's plain array.
+        """
         # check if datasets supplied
         if len(datasets) <= 0:
             return
@@ -164,10 +171,35 @@ class H5Coro:
                 dataset_table[dataset] = {"dataset": dataset, "hyperslice": []}
             else:
                 dataset["dataset"] = massagePath(dataset["dataset"])
+                if "hyperslice" not in dataset:
+                    dataset["hyperslice"] = []
                 dataset_table[dataset["dataset"]] = dataset
+
+        # validate field selections up front so that a bad request raises in the
+        # caller (reads that fail inside the promise are logged and return None)
+        for dataset in dataset_table.values():
+            if dataset.get("fields") is not None:
+                self.validateFields(dataset["dataset"], dataset["fields"], earlyExit=earlyExit, enableAttributes=enableAttributes)
 
         # return promise
         return H5Promise(self, dataset_table, block, earlyExit=earlyExit, metaOnly=metaOnly, enableAttributes=enableAttributes)
+
+    #######################
+    # validateFields
+    #######################
+    def validateFields(self, dataset, fields, *, earlyExit, enableAttributes):
+        if type(fields) == str:
+            fields = [fields]
+        if len(fields) == 0:
+            raise FatalError(f'empty field selection for {dataset}')
+        H5Dataset(self, dataset, earlyExit=earlyExit, metaOnly=True, enableAttributes=enableAttributes)
+        meta = self.metadataTable.get(dataset)
+        if meta == None or meta.type != H5Metadata.COMPOUND_TYPE:
+            raise FatalError(f'fields {list(fields)} requested on {dataset}, which is not a compound dataset')
+        available = [name for name, _, _ in meta.members]
+        unknown = [field for field in fields if field not in available]
+        if len(unknown) > 0:
+            raise FatalError(f'unknown field(s) {unknown} in {dataset}; available fields: {available}')
 
     #######################
     # readPath

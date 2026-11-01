@@ -208,6 +208,9 @@ class H5Metadata:
         elif self.type in [self.STRING_TYPE, self.VL_STRING_TYPE]:
             return numpy.dtype("U")  # Use NumPy's Unicode string type
 
+        elif self.type == self.COMPOUND_TYPE:
+            return self.numpyDtype  # structured dtype of the records
+
         else:
             return numpy.dtype("O")  # Default to object type for unsupported types
 
