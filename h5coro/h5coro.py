@@ -154,10 +154,13 @@ class H5Coro:
     def readDatasets(self, datasets, block=True, earlyExit=EARLY_EXIT_DEFAULT, metaOnly=META_ONLY_DEFAULT, enableAttributes=ENABLE_ATTRIBUTES_DEFAULT):
         """
         Read datasets; each entry is a path or a request dict:
-            {"dataset": path, "hyperslice": [[start, end], ...], "fields": [name, ...]}
+            {"dataset": path, "hyperslice": [[start, end], ...], "fields": [name, ...], "squeeze_fields": True}
+        Only "dataset" is required; the caller's dict is not modified.
         "fields" applies to compound datasets only and selects members after the
         records are decoded: several names give a structured array restricted to
-        those members, a single name gives that member's plain array.
+        those members (in the order given). A single name (or a bare str) gives
+        that member's plain array when "squeeze_fields" is True (the default),
+        or a one-member structured array when it is False.
         """
         # check if datasets supplied
         if len(datasets) <= 0:
@@ -178,7 +181,7 @@ class H5Coro:
                     hyperslice = []
                 elif isinstance(hyperslice, (list, tuple)):
                     hyperslice = [list(r) if isinstance(r, (list, tuple)) else r for r in hyperslice]
-                dataset_table[path] = {"dataset": path, "hyperslice": hyperslice, "fields": dataset.get("fields")}
+                dataset_table[path] = {"dataset": path, "hyperslice": hyperslice, "fields": dataset.get("fields"), "squeeze_fields": dataset.get("squeeze_fields", True)}
 
         # validate field selections up front so that a bad request raises in the
         # caller (reads that fail inside the promise are logged and return None)

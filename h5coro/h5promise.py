@@ -36,9 +36,9 @@ from h5coro.logger import log
 # Local Functions
 ###############################################################################
 
-def datasetThread(resourceObject, dataset, hyperslice, fields=None, *, earlyExit, metaOnly, enableAttributes):
+def datasetThread(resourceObject, dataset, hyperslice, fields=None, squeeze_fields=True, *, earlyExit, metaOnly, enableAttributes):
     try:
-        return H5Dataset(resourceObject, dataset, hyperslice, fields=fields, earlyExit=earlyExit, metaOnly=metaOnly, enableAttributes=enableAttributes)
+        return H5Dataset(resourceObject, dataset, hyperslice, fields=fields, squeeze_fields=squeeze_fields, earlyExit=earlyExit, metaOnly=metaOnly, enableAttributes=enableAttributes)
     except RuntimeError as e:
         log.warn(f'H5Coro encountered error reading {dataset}: {e}')
         return H5Dataset(resourceObject, dataset, hyperslice, makeNull=True, earlyExit=earlyExit, metaOnly=metaOnly, enableAttributes=enableAttributes)
@@ -77,7 +77,7 @@ class H5Promise:
 
         # start threads working on each dataset
         executor = ThreadPoolExecutor(max_workers=len(datasetTable))
-        futures = [executor.submit(datasetThread, resourceObject, dataset["dataset"], dataset["hyperslice"], dataset.get("fields"), earlyExit=earlyExit, metaOnly=metaOnly, enableAttributes=enableAttributes) for dataset in datasetTable.values()]
+        futures = [executor.submit(datasetThread, resourceObject, dataset["dataset"], dataset["hyperslice"], dataset.get("fields"), dataset.get("squeeze_fields", True), earlyExit=earlyExit, metaOnly=metaOnly, enableAttributes=enableAttributes) for dataset in datasetTable.values()]
 
         # wait for datasets to be populated OR populate datasets in the background
         if block:

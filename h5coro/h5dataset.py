@@ -144,10 +144,11 @@ class H5Dataset:
     #######################
     # Constructor
     #######################
-    def __init__(self, resourceObject, dataset, hyperslice=None, makeNull=False, enableFill=True, fields=None, *, earlyExit, metaOnly, enableAttributes):
+    def __init__(self, resourceObject, dataset, hyperslice=None, makeNull=False, enableFill=True, fields=None, squeeze_fields=True, *, earlyExit, metaOnly, enableAttributes):
         # initialize object
         self.resourceObject         = resourceObject
         self.fields                 = fields
+        self.squeezeFields          = squeeze_fields
         self.earlyExit              = earlyExit
         self.metaOnly               = metaOnly
         self.enableAttributes       = enableAttributes
@@ -359,8 +360,9 @@ class H5Dataset:
     # selectFields
     #
     #   Restricts a decoded compound array to the requested member names:
-    #   one name returns that member's plain array, several names return a
-    #   structured array holding just those members (in the order given).
+    #   several names return a structured array holding just those members
+    #   (in the order given); one name returns that member's plain array when
+    #   squeezeFields is set, else a one-member structured array.
     #######################
     def selectFields(self, values, fields):
         fields = normalizeFields(self.dataset, fields)
@@ -370,7 +372,7 @@ class H5Dataset:
         unknown = [field for field in fields if field not in available]
         if len(unknown) > 0:
             raise FatalError(f'unknown field(s) {unknown} in {self.dataset}; available fields: {available}')
-        if len(fields) == 1:
+        if len(fields) == 1 and self.squeezeFields:
             return values[fields[0]]
         return values[list(fields)]
 
