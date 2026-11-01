@@ -14,6 +14,7 @@ from h5coro.h5metadata import H5Metadata
 BIG_ENDIAN = ['>i2', '>i4', '>f4', '>f8']
 LITTLE_ENDIAN = ['<i2', '<i4', '<f4', '<f8']
 N = 200
+FILL_VALUES = {'>f8': -7.5, '>i4': -42}
 
 
 def values_for(dtype):
@@ -34,6 +35,11 @@ def byteorder_file(tmp_path_factory):
             f.create_dataset(f'{tag}_2d', data=values_for(dtype).reshape(20, 10), chunks=(8, 10), shuffle=True, compression='gzip')
         f['be_f8_contiguous'].attrs.create('be_attr', np.array([1.5, -2.25], dtype='>f8'))
         f['be_f8_contiguous'].attrs.create('be_scalar', np.array(42, dtype='>i4'))
+        # big-endian datasets with a defined fill value and only the first third
+        # written; with 10-element chunks the tail chunks stay unallocated
+        for dtype, fill in FILL_VALUES.items():
+            d = f.create_dataset(f'{tag_of(dtype)}_fill', shape=(N,), chunks=(10,), dtype=dtype, fillvalue=fill)
+            d[:N // 3] = values_for(dtype)[:N // 3]
     return str(path)
 
 
@@ -72,6 +78,25 @@ class TestBigEndian:
             expected = f[name][index]
         values = h5obj.readDatasets([{'dataset': name, 'hyperslice': hyperslice}], block=True)[name]
         np.testing.assert_array_equal(values, expected)
+
+    @pytest.mark.parametrize('dtype', list(FILL_VALUES))
+    def test_fill_value_for_unwritten_chunks(self, h5obj, byteorder_file, dtype):
+        # Pins the fill pre-fill path for big-endian data. The fill bytes are
+        # stored in the dataset's byte order; readFillValue decodes them as a
+        # little-endian int and struct.pack('Q') re-encodes them little-endian,
+        # so the original bytes round-trip unchanged and the '>' dtype reads
+        # them correctly. If either side starts honouring the byte order alone,
+        # the bytes get swapped once and the unwritten chunks decode as garbage.
+        name = f'{tag_of(dtype)}_fill'
+        with h5py.File(byteorder_file, 'r') as f:
+            expected = f[name][:]
+            assert f[name].id.get_num_chunks() < N // 10
+        # h5py returns the fill value for the unwritten tail chunks
+        assert (expected[N // 3 + 10:] == FILL_VALUES[dtype]).all()
+        values = h5obj.readDatasets([name], block=True)[name]
+        assert values.dtype == np.dtype(dtype)
+        np.testing.assert_array_equal(values, expected)
+        assert (values[N // 3 + 10:] == FILL_VALUES[dtype]).all()
 
     def test_metadata_reports_byte_order(self, h5obj):
         _, _, meta = h5obj.inspectPath('be_i4_contiguous', w_attr=False)
