@@ -4,6 +4,7 @@ files, h5coro reads them back through the FileDriver, and the two are
 compared.  No network access is required.
 """
 import logging
+import re
 import h5py
 import numpy as np
 import pytest
@@ -368,9 +369,14 @@ class TestFieldSelectionOptions:
         assert values.dtype.itemsize == FLAT_DTYPE.itemsize
         assert values.dtype.fields['c'][1] == FLAT_DTYPE.fields['c'][1]
 
-    @pytest.mark.parametrize('fields', [['a', 'a'], [], 5, ['a', 3]])
-    def test_malformed_fields_raise(self, h5obj, fields):
-        with pytest.raises(RuntimeError):
+    @pytest.mark.parametrize('fields, pattern', [
+        (['a', 'a'], re.escape("duplicate field(s) ['a']")),
+        ([], 'empty field selection'),
+        (5, re.escape('must be a str or a list of str')),
+        (['a', 3], re.escape('must be a str or a list of str')),
+    ])
+    def test_malformed_fields_raise(self, h5obj, fields, pattern):
+        with pytest.raises(RuntimeError, match=pattern):
             h5obj.readDatasets([{'dataset': 'flat', 'fields': fields}], block=True)
 
     def test_missing_dataset_with_fields_raises(self, h5obj):
