@@ -2360,8 +2360,14 @@ class H5Dataset:
     # shuffleChunk
     #######################
     def shuffleChunk(self, input, output_offset, output_size, type_size):
-        if self.resourceObject.errorChecking and (type_size < 0 or type_size > 8):
-            raise FatalError(f'invalid data size to perform shuffle on: {type_size}')
+        if self.resourceObject.errorChecking:
+            # the byte transpose below is generic in type_size; compound records
+            # are shuffled by their full struct size, which is usually wider than 8
+            if self.meta.type == H5Metadata.COMPOUND_TYPE:
+                if type_size <= 0:
+                    raise FatalError(f'invalid data size to perform shuffle on: {type_size}')
+            elif type_size < 0 or type_size > 8:
+                raise FatalError(f'invalid data size to perform shuffle on: {type_size}')
         output = bytearray(output_size)
         dst_index = 0
         shuffle_block_size = int(len(input) / type_size)
