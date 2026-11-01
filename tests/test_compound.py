@@ -312,9 +312,8 @@ class TestCompoundDecode:
         with pytest.raises(RuntimeError) as excinfo:
             h5obj.readDatasets([{'dataset': 'flat', 'fields': ['a', 'nope']}], block=True)
         message = str(excinfo.value)
-        assert 'nope' in message
-        for name in FLAT_DTYPE.names:
-            assert name in message
+        assert "['nope']" in message
+        assert 'available fields: ' + str(list(FLAT_DTYPE.names)) in message
 
     def test_fields_on_non_compound_raises(self, h5obj):
         with pytest.raises(RuntimeError, match='not a compound dataset'):
