@@ -182,9 +182,20 @@ class H5Coro:
 
         # validate field selections up front so that a bad request raises in the
         # caller (reads that fail inside the promise are logged and return None)
-        for dataset in dataset_table.values():
-            if dataset.get("fields") is not None:
-                dataset["fields"] = self.validateFields(dataset["dataset"], dataset["fields"], earlyExit=earlyExit, enableAttributes=enableAttributes)
+        # (the metadata-only reads use earlyExit=True: only the datatype is
+        # needed, and the promise's workers then hit the metadata cache)
+        selections = [dataset for dataset in dataset_table.values() if dataset.get("fields") is not None]
+        for dataset in selections:
+            dataset["fields"] = normalizeFields(dataset["dataset"], dataset["fields"])
+        if len(selections) == 1:
+            H5Dataset(self, selections[0]["dataset"], earlyExit=True, metaOnly=True, enableAttributes=enableAttributes)
+        elif len(selections) > 1:
+            with ThreadPoolExecutor(max_workers=len(selections)) as executor:
+                futures = [executor.submit(H5Dataset, self, dataset["dataset"], earlyExit=True, metaOnly=True, enableAttributes=enableAttributes) for dataset in selections]
+                for future in futures:
+                    future.result()
+        for dataset in selections:
+            self.validateFields(dataset["dataset"], dataset["fields"])
 
         # return promise
         return H5Promise(self, dataset_table, block, earlyExit=earlyExit, metaOnly=metaOnly, enableAttributes=enableAttributes)
@@ -192,9 +203,8 @@ class H5Coro:
     #######################
     # validateFields
     #######################
-    def validateFields(self, dataset, fields, *, earlyExit, enableAttributes):
-        fields = normalizeFields(dataset, fields)
-        H5Dataset(self, dataset, earlyExit=earlyExit, metaOnly=True, enableAttributes=enableAttributes)
+    def validateFields(self, dataset, fields):
+        # expects normalised fields and the dataset's metadata already read
         meta = self.metadataTable.get(dataset)
         if meta == None or meta.typeSize == 0:
             raise FatalError(f'dataset {dataset} not found; cannot select fields {fields}')
@@ -204,7 +214,6 @@ class H5Coro:
         unknown = [field for field in fields if field not in available]
         if len(unknown) > 0:
             raise FatalError(f'unknown field(s) {unknown} in {dataset}; available fields: {available}')
-        return fields
 
     #######################
     # readPath
