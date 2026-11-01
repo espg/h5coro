@@ -28,6 +28,7 @@
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import numpy
+from h5coro.logger import log
 
 ###############################################################################
 # H5Metadata Class
@@ -103,6 +104,11 @@ class H5Metadata:
         self.chunkDimensions    = []
         self.elementSize        = 0
         self.isattribute        = False
+        self.byteOrder          = 0     # 0: little endian, 1: big endian (fixed/floating point only)
+        self.members            = []    # compound: list of (name, offset, H5Metadata) in file order
+        self.arrayDims          = []    # array: dimension sizes of the array datatype
+        self.baseType           = None  # array: H5Metadata of the element datatype
+        self._numpyDtype        = None  # cache for the numpyDtype property
         self.filter             = {
             self.DEFLATE_FILTER:        False,
             self.SHUFFLE_FILTER:        False,
@@ -122,6 +128,9 @@ class H5Metadata:
             typestr = f'{datatype}'
         elif self.type == self.STRING_TYPE or self.type == self.VL_STRING_TYPE:
             typestr = f'{str}'
+        elif self.type == self.COMPOUND_TYPE:
+            members = ', '.join([f'\"{name}\": {dtype}' for name, dtype in self.memberDtypes().items()])
+            return f'{{\"type\": {self.numpyDtype}, \"members\": {{{members}}}, \"dims\": {self.dimensions}}}'
         return f'{{\"type\": {typestr}, \"dims\": {self.dimensions}}}'
 
     #######################
@@ -129,6 +138,61 @@ class H5Metadata:
     #######################
     def __str__(self):
         return self.__repr__()
+
+    #######################
+    # numpyDtype
+    #######################
+    @property
+    def numpyDtype(self):
+        """
+        The numpy dtype that maps onto this datatype's bytes in the file.
+
+        Compound types become structured dtypes (names, formats, offsets and
+        the struct's itemsize), nested compounds recurse, array members become
+        sub-array fields, fixed length strings become S<n>, and any member that
+        cannot be decoded becomes an opaque V<n> of the right size so that the
+        itemsize of the enclosing struct is always correct.  The result is
+        computed once (after the datatype message has been parsed) and cached.
+        """
+        if self._numpyDtype is None:
+            self._numpyDtype = self._buildNumpyDtype()
+        return self._numpyDtype
+
+    def _buildNumpyDtype(self):
+        if self.type == self.COMPOUND_TYPE:
+            try:
+                return numpy.dtype({
+                    'names':    [name for name, _, _ in self.members],
+                    'formats':  [member.numpyDtype for _, _, member in self.members],
+                    'offsets':  [offset for _, offset, _ in self.members],
+                    'itemsize': self.typeSize
+                })
+            except (ValueError, TypeError) as e:
+                log.warning(f'compound datatype of size {self.typeSize} has members that do not fit a numpy dtype ({e}): treating as opaque')
+                return numpy.dtype(f'V{self.typeSize}')
+        elif self.type == self.FIXED_POINT_TYPE or self.type == self.FLOATING_POINT_TYPE:
+            try:
+                dtype = numpy.dtype(self.TO_NUMPY_TYPE[self.type][self.signedval][self.typeSize])
+            except KeyError:
+                log.warning(f'no numpy dtype for datatype class {self.type} of size {self.typeSize}: treating as opaque')
+                return numpy.dtype(f'V{self.typeSize}')
+            return dtype.newbyteorder('>' if self.byteOrder == 1 else '<')
+        elif self.type == self.STRING_TYPE:
+            return numpy.dtype(f'S{self.typeSize}')
+        elif self.type == self.ARRAY_TYPE and self.baseType != None:
+            return numpy.dtype((self.baseType.numpyDtype, tuple(self.arrayDims)))
+        else:
+            log.warning(f'datatype class {self.type} of size {self.typeSize} is not decodable: treating as opaque')
+            return numpy.dtype(f'V{self.typeSize}')
+
+    #######################
+    # memberDtypes
+    #######################
+    def memberDtypes(self):
+        """Ordered {member name: numpy dtype} for a compound type ({} otherwise)."""
+        if self.type != self.COMPOUND_TYPE:
+            return {}
+        return {name: member.numpyDtype for name, _, member in self.members}
 
     #######################
     # getNumpyType
