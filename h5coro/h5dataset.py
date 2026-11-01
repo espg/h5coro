@@ -253,8 +253,21 @@ class H5Dataset:
             elif self.meta.ndims == 0:
                 buffer = self.resourceObject.ioRequest(self.meta.address, buffer_size, caching=False)
             else:
-                compact_buffer = self.resourceObject.ioRequest(self.meta.address, buffer_size, caching=False)
-                self.readSlice(buffer, self.shape, self.hyperslice, compact_buffer, self.meta.dimensions, self.hyperslice)
+                # the data is stored row-major, so the hyperslice lies inside the
+                # window of whole outer-dimension rows [first_row, last_row); read
+                # that window and let readSlice pick the inner-dimension ranges
+                # out of it (a full read is a window covering every row)
+                first_row, last_row = self.hyperslice[0]
+                row_size = self.meta.typeSize
+                for d in range(1, self.meta.ndims):
+                    row_size *= self.meta.dimensions[d]
+                window_offset = first_row * row_size
+                window_size = (last_row - first_row) * row_size
+                window_buffer = self.resourceObject.ioRequest(self.meta.address + window_offset, window_size, caching=False)
+                window_dimensions = [last_row - first_row] + list(self.meta.dimensions[1:])
+                window_slice = [(0, last_row - first_row)] + [tuple(self.hyperslice[d]) for d in range(1, self.meta.ndims)]
+                output_slice = [(0, self.shape[d]) for d in range(self.meta.ndims)]
+                self.readSlice(buffer, self.shape, output_slice, window_buffer, window_dimensions, window_slice)
 
         # ###################################
         # read chunked layouts
@@ -2401,14 +2414,10 @@ class H5Dataset:
     # shuffleChunk
     #######################
     def shuffleChunk(self, input, output_offset, output_size, type_size):
-        if self.resourceObject.errorChecking:
-            # the byte transpose below is generic in type_size; compound records
-            # are shuffled by their full struct size, which is usually wider than 8
-            if self.meta.type == H5Metadata.COMPOUND_TYPE:
-                if type_size <= 0:
-                    raise FatalError(f'invalid data size to perform shuffle on: {type_size}')
-            elif type_size < 0 or type_size > 8:
-                raise FatalError(f'invalid data size to perform shuffle on: {type_size}')
+        # the byte transpose below is generic in type_size (HDF5 shuffles by the
+        # full element size, which for compounds and strings can exceed 8 bytes)
+        if self.resourceObject.errorChecking and type_size <= 0:
+            raise FatalError(f'invalid data size to perform shuffle on: {type_size}')
         output = bytearray(output_size)
         dst_index = 0
         shuffle_block_size = int(len(input) / type_size)

@@ -238,12 +238,12 @@ class TestCompoundDecode:
         promise = h5obj.readDatasets([{'dataset': name, 'hyperslice': HYPERSLICE}], block=True)
         np.testing.assert_array_equal(promise[name], expected)
 
-    @pytest.mark.xfail(strict=True, reason='hyperslices on contiguous layouts read from the dataset start for every datatype (pre-existing, not compound specific)')
-    def test_hyperslice_read_contiguous(self, h5obj, compound_file):
+    @pytest.mark.parametrize('name', [n for n in DATASETS if n != 'enum_member' and n not in CHUNKED])
+    def test_hyperslice_read_contiguous(self, h5obj, compound_file, name):
         with h5py.File(compound_file, 'r') as f:
-            expected = f['flat'][HYPERSLICE[0][0]:HYPERSLICE[0][1]]
-        promise = h5obj.readDatasets([{'dataset': 'flat', 'hyperslice': HYPERSLICE}], block=True)
-        np.testing.assert_array_equal(promise['flat'], expected)
+            expected = f[name][HYPERSLICE[0][0]:HYPERSLICE[0][1]]
+        promise = h5obj.readDatasets([{'dataset': name, 'hyperslice': HYPERSLICE}], block=True)
+        np.testing.assert_array_equal(promise[name], expected)
 
     def test_two_dimensional_read(self, h5obj, compound_file):
         with h5py.File(compound_file, 'r') as f:
